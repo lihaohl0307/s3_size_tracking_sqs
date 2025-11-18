@@ -5,76 +5,57 @@ import json
 import logging
 import urllib.request
 from urllib.error import HTTPError, URLError
-
 import boto3
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-REGION        = os.environ.get("REGION", "us-east-1")
-BUCKET_NAME   = os.environ["BUCKET_NAME"]
-SLEEP_BETWEEN = int(os.environ.get("SLEEP_SECONDS", "4"))
-PLOT_API_URL  = os.environ["PLOT_API_URL"]         # injected by CDK (PlotLambdaStack output)
-PLOT_WINDOW   = int(os.environ.get("PLOT_WINDOW", "30"))
+REGION = os.environ.get("REGION", "us-east-1")
+BUCKET_NAME = os.environ["BUCKET_NAME"]
+SLEEP = int(os.environ.get("SLEEP_SECONDS", "40"))  # long enough to cross CloudWatch periods
+PLOT_API_URL = os.environ["PLOT_API_URL"]
+PLOT_WINDOW = int(os.environ.get("PLOT_WINDOW", "60"))
 
 s3 = boto3.client("s3", region_name=REGION)
 
-def _put_text(key: str, text: str):
-    s3.put_object(Bucket=BUCKET_NAME, Key=key, Body=text.encode("utf-8"))
-    log.info("PUT s3://%s/%s (%d bytes)", BUCKET_NAME, key, len(text.encode("utf-8")))
 
-def _delete(key: str):
-    s3.delete_object(Bucket=BUCKET_NAME, Key=key)
-    log.info("DEL s3://%s/%s", BUCKET_NAME, key)
+def put_text(key: str, text: str):
+    data = text.encode("utf-8")
+    s3.put_object(Bucket=BUCKET_NAME, Key=key, Body=data)
+    log.info("PUT s3://%s/%s (%d bytes)", BUCKET_NAME, key, len(data))
 
-def _call_plot_api(base_url: str, window: int):
-    # base_url typically ends with '/dev/' since proxy=true; query string is enough
-    full = f"{base_url}?window={window}"
-    req = urllib.request.Request(full, method="GET")
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            body = r.read().decode("utf-8")
-            return r.status, body
-    except HTTPError as e:
-        err_body = e.read().decode("utf-8", errors="replace")
-        log.error("Plot API HTTPError %s, body: %s", e, err_body)
-        raise
-    except URLError as e:
-        log.error("Plot API URLError %s", e)
-        raise
+
+def call_plot_api(url: str, window: int):
+    full_url = f"{url}?window={window}"
+    log.info("Calling plot API: %s", full_url)
+    req = urllib.request.Request(full_url, method="GET")
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return r.status, r.read().decode("utf-8")
+
 
 def lambda_handler(event, context):
-    log.info("Driver start: bucket=%s, api=%s", BUCKET_NAME, PLOT_API_URL)
+    log.info("Driver start")
 
-    # 1) Create assignment1.txt -> 19 bytes (with newline)
-    _put_text("assignment1.txt", "Empty Assignment 1\n")
-    time.sleep(SLEEP_BETWEEN)
+    # assignment1 (19 bytes)
+    put_text("assignment1.txt", "Empty Assignment 1")
+    time.sleep(SLEEP)
 
-    # 2) Update assignment1.txt -> 28 bytes (with newline)
-    _put_text("assignment1.txt", "Empty Assignment 2222222222\n")
-    time.sleep(SLEEP_BETWEEN)
+    # assignment2 (28 bytes) → should trigger first alarm, Cleaner removes assignment2
+    put_text("assignment2.txt", "Empty Assignment 2222222222")
+    time.sleep(SLEEP)
 
-    # 3) Delete assignment1.txt
-    _delete("assignment1.txt")
-    time.sleep(SLEEP_BETWEEN)
+    # assignment3 (2 bytes) → should trigger second alarm, Cleaner removes assignment1
+    put_text("assignment3.txt", "33")
+    time.sleep(SLEEP)
 
-    # 4) Create assignment2.txt -> 2 bytes (no newline)
-    _put_text("assignment2.txt", "33")
-
-    # Give size-tracking lambda a moment to write to DynamoDB
-    time.sleep(1)
-
-    # 5) Trigger plotting lambda via API
-    status, body = _call_plot_api(PLOT_API_URL, PLOT_WINDOW)
-    log.info("Plot API status=%s body=%s", status, body[:500])
+    # call plot API
+    try:
+        status, body = call_plot_api(PLOT_API_URL, PLOT_WINDOW)
+    except Exception as e:
+        log.exception("Plot API failed")
+        status, body = 500, str(e)
 
     return {
         "statusCode": status,
-        "headers": {"Content-Type": "application/json"},
-        "body": json.dumps({
-            "bucket": BUCKET_NAME,
-            "plot_api_url": PLOT_API_URL,
-            "plot_window_seconds": PLOT_WINDOW,
-            "result": body,
-        }),
+        "body": json.dumps({"plot_response": body})
     }
