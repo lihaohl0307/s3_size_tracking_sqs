@@ -12,7 +12,7 @@ log = logging.getLogger(__name__)
 
 REGION = os.environ.get("REGION", "us-east-1")
 BUCKET_NAME = os.environ["BUCKET_NAME"]
-SLEEP = int(os.environ.get("SLEEP_SECONDS", "40"))  # long enough to cross CloudWatch periods
+SLEEP = int(os.environ.get("SLEEP_SECONDS", "30"))  # long enough to cross CloudWatch periods
 PLOT_API_URL = os.environ["PLOT_API_URL"]
 PLOT_WINDOW = int(os.environ.get("PLOT_WINDOW", "60"))
 
@@ -37,7 +37,7 @@ def lambda_handler(event, context):
     log.info("Driver start")
 
     # assignment1 (19 bytes)
-    put_text("assignment1.txt", "Empty Assignment 1")
+    put_text("assignment1.txt", "Empty Assignment 11")
     time.sleep(SLEEP)
 
     # assignment2 (28 bytes) → should trigger first alarm, Cleaner removes assignment2

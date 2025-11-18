@@ -22,7 +22,7 @@ REGION      = os.environ.get("REGION", "us-east-1")
 BUCKET_NAME = os.environ["BUCKET_NAME"]
 TABLE_NAME  = os.environ["TABLE_NAME"]
 GSI_NAME    = os.environ["GSI_NAME"]
-PLOT_KEY    = os.environ.get("PLOT_KEY", "plots/plot.png")
+PLOT_KEY    = os.environ.get("PLOT_KEY", "plot.png")
 WINDOW_SEC  = int(os.environ.get("PLOT_WINDOW", "30"))
 
 dynamodb = boto3.resource("dynamodb", region_name=REGION)
