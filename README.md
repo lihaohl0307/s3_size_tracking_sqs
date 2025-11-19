@@ -1,243 +1,314 @@
-# project structure
+Great — I’ll write you a **brand-new, clean, polished, professional README** that matches your **current architecture** (SNS → SQS → SizeTracking + Logging + MetricFilter + Alarm → Cleaner + Plot + Driver).
+This replaces the old README completely.
 
-We’ll use these four stacks:
-1. StorageStack: DynamoDB table (+ GSI). No bucket here.
-2. SizeTrackingLambdaStack: S3 bucket + SizeTracking lambda + S3 notifications.
-3. PlotLambdaStack: Plot lambda + API Gateway (reads Dynamo and writes PNG to the bucket).
-4. DriverLambdaStack: Driver lambda (needs bucket RW + the Plot API URL).
-
-This way:
-SizeTrackingLambdaStack depends on StorageStack (for the table).
-StorageStack does not reference the lambda stack (no S3 notifications there), so no back edge.
-PlotLambdaStack depends on both StorageStack (table) and SizeTrackingLambdaStack (bucket).
-DriverLambdaStack depends on PlotLambdaStack (API URL) and SizeTrackingLambdaStack (bucket).
-
-Here you go — a clean, copy-paste **README.md** that explains the architecture, stacks, deploy flow, and how to verify using what you saw in your `cdk diff` output.
+👇 **You can copy-paste this as README.md.**
 
 ---
 
-# S3 Bucket Size Microservices (CDK)
+# S3 Size Tracking & Auto-Cleaning System (AWS CDK v2)
 
-Track and plot an S3 bucket’s total size over time using a microservice architecture with three Lambdas:
+This project implements a fully event-driven AWS microservice system for:
 
-* **SizeTrackingLambda** (triggered by S3 events)
-* **PlotLambda** (queried through API Gateway)
-* **DriverLambda** (creates/updates/deletes test objects, then calls Plot API)
+* Tracking total size of an S3 bucket over time
+* Logging per-object size changes
+* Publishing CloudWatch metrics from logs
+* Auto-deleting the largest object when bucket growth exceeds a threshold
+* Plotting historical bucket size trends
+* Running controlled demo flows via a driver Lambda
 
-This repo is fully provisioned by **AWS CDK v2** and split into logical stacks to avoid circular dependencies and keep concerns separate.
+All infrastructure is defined using **AWS CDK v2 (TypeScript)** and deployed as four logically separated stacks.
 
 ---
 
-## 📐 Architecture
+# 📐 High-Level Architecture
 
 ```
-          ┌─────────────────────────┐
-          │  StorageStack           │
-          │  (DynamoDB + GSI)       │
-          │  Table: S3-object-size… │
-          └──────────┬──────────────┘
-                     │ (Query/Write)
-                     │
-     ┌───────────────▼──────────────────┐
-     │ SizeTrackingLambdaStack          │
-     │  • S3 Bucket (TestBucket)        │
-     │  • SizeTrackingLambda            │
-     │  • S3→Lambda Notifications       │
-     └───────────┬──────────────────────┘
-                 │ (Put plot, read/write objects)
-                 │
-        ┌────────▼──────────┐            ┌──────────────────────┐
-        │ PlotLambdaStack    │            │ DriverLambdaStack    │
-        │  • PlotLambda      │            │  • DriverLambda      │
-        │  • API Gateway     │◄──────────▶│  calls Plot API      │
-        └────────────────────┘            └──────────────────────┘
-```
-
-* **No cycles:** S3 bucket and its notifications live in the **same** stack as SizeTrackingLambda. DynamoDB is in **StorageStack**. Plot/Driver consume exported outputs.
-
----
-
-## 🧱 Stacks
-
-### 1) `StorageStack`
-
-DynamoDB table (PK=`bucket`, SK=`ts`) + **GSI** `(bucket, size_bytes)` for O(1) “all-time max” queries.
-
-* **From your `cdk diff`:**
-
-  * `AWS::DynamoDB::Table SizeHistoryTable`
-  * Outputs: `TableName`, `GsiName`, and exported ARNs for cross-stack grants
-
-### 2) `SizeTrackingLambdaStack`
-
-Owns the **S3 bucket**, **SizeTrackingLambda**, and the **S3 → Lambda event notifications**.
-
-* **From your `cdk diff`:**
-
-  * `AWS::S3::Bucket TestBucket`
-  * Custom resources for auto-delete in dev (clean teardown)
-  * Permissions: S3 invokes the Lambda (`lambda:InvokeFunction` with `AWS:SourceArn` = bucket)
-  * Grants: Lambda can list/get on bucket; read/write on DynamoDB (imported from `StorageStack`)
-
-### 3) `PlotLambdaStack`
-
-**PlotLambda** + **API Gateway** to invoke it synchronously.
-Reads last N seconds from table, queries **max** via GSI, plots PNG, and **PUTs** to S3.
-
-* **From your `cdk diff`:**
-
-  * `AWS::Lambda::Function PlotLambda`, optional `AWS::Lambda::LayerVersion MatplotlibLayer`
-  * `AWS::ApiGateway::RestApi PlotApi` + Stage `dev`
-  * Permissions on:
-
-    * Table (read/query incl. `…/index/*`)
-    * Bucket (get/put object + list bucket)
-  * Output: `PlotApiUrl` (Invoke URL ending with `/dev/`)
-
-### 4) `DriverLambdaStack`
-
-**DriverLambda**: creates/updates/deletes test objects with sleeps in between → fires SizeTrackingLambda; then **calls Plot API**.
-
-* **From your `cdk diff`:**
-
-  * `AWS::Lambda::Function DriverLambda`
-  * Permissions: RW on bucket (imported from `SizeTrackingLambdaStack`)
-
----
-
-## 🗂 Repository Structure
-
-```
-s3-size-micro/
-├─ bin/
-│  └─ app.ts                         # instantiates the four stacks
-├─ lib/
-│  ├─ storage-stack.ts               # DynamoDB + GSI
-│  ├─ size-tracking-lambda-stack.ts  # Bucket + SizeTracking + Notifications
-│  ├─ plot-lambda-stack.ts           # PlotLambda + API Gateway
-│  └─ driver-lambda-stack.ts         # DriverLambda
-├─ lambdas/
-│  ├─ lambda_driver.py
-│  ├─ lambda_plotting.py
-│  └─ lambda_size_tracking.py
-├─ layers/
-│  └─ matplotlib-py313-x86-layer.zip # optional (matplotlib/numpy/pillow)
-├─ package.json
-├─ tsconfig.json
-└─ cdk.json
+                    ┌─────────────────────────┐
+                    │     StorageStack        │
+                    │  DynamoDB SizeHistory   │
+                    │  + GSI (bucket,size)    │
+                    └───────────┬─────────────┘
+                                │
+                      (read/write snapshots)
+                                │
+               ┌────────────────▼─────────────────┐
+               │    SizeTrackingLambdaStack       │
+               │                                   │
+               │  TestBucket (S3)                  │
+               │  SNS Topic (fanout)               │
+               │  SQS Queue A → SizeTracking Lambda│
+               │  SQS Queue B → Logging Lambda     │
+               │  Logging LogGroup + MetricFilter  │
+               │  CloudWatch Alarm → Cleaner Lambda│
+               └───────────┬──────────────────────┘
+                           │
+                      (S3 read/write)
+             ┌─────────────▼────────────────────────┐
+             │           PlotLambdaStack             │
+             │                                       │
+             │  PlotLambda (queries DynamoDB, draws  │
+             │  PNG, writes to S3)                   │
+             │  API Gateway /dev → PlotLambda        │
+             └─────────────┬────────────────────────┘
+                           │
+                      (S3 read/write + GET Plot API)
+             ┌─────────────▼────────────────────────┐
+             │         DriverLambdaStack             │
+             │  DriverLambda: creates sample objects │
+             │  waits between ops, triggers S3 events│
+             │  calls Plot API at end                │
+             └───────────────────────────────────────┘
 ```
 
 ---
 
-## ⚙️ Environment & Versions
+# 🧱 Stack Breakdown
 
-* **Runtime:** Python 3.13 (adjust to 3.12 if your wheels/layer target that)
-* **CDK:** v2 (TypeScript, CommonJS)
-* **Region:** defaults to `us-east-1` in `bin/app.ts` (overridden by `CDK_DEFAULT_REGION`)
+## 1) **StorageStack**
 
-> The CLI may warn that Node 18 support is ending — upgrading to Node 20+ is recommended.
+Contains only the persistent data store:
+
+* DynamoDB table (`bucket` + `ts`)
+* GSI `(bucket, size_bytes)` for fast “max size” lookups
+
+Used by both SizeTracking Lambda and Plot Lambda.
 
 ---
 
-## 🚀 Deploy
+## 2) **SizeTrackingLambdaStack**
+
+This is the main event-processing stack:
+
+### Includes:
+
+* **S3 Bucket** (`TestBucket`)
+* **SNS Topic** for S3 events fan-out
+* **SQS Queue A** → SizeTrackingLambda
+* **SQS Queue B** → LoggingLambda
+* **SizeTracking Lambda**
+
+  * triggered by SQS fan-out
+  * recomputes the entire bucket size
+  * writes a snapshot to DynamoDB
+* **Logging Lambda**
+
+  * extracts `{object_name, size_delta}` from SNS/S3 notifications
+  * logs JSON to its own log group
+* **LogGroup + MetricFilter**
+
+  * Filter pattern extracts `$.size_delta`
+  * Publishes metric:
+    **Namespace**: `Assignment4App`
+    **Metric**: `TotalObjectSize`
+* **CloudWatch Alarm**
+
+  * `Sum(size_delta)` > 20 (single evaluation period)
+  * ALARM → invokes Cleaner
+* **Cleaner Lambda**
+
+  * lists objects
+  * deletes the **largest object**
+  * reduces bucket total until metric drops
+
+### Why fan-out (SNS → SQS)?
+
+* Loosely coupling
+* Independent consumers (tracking vs logging)
+* Reliable delivery with retry/backoff
+* Lambda concurrency isolation
+
+---
+
+## 3) **PlotLambdaStack**
+
+Contains:
+
+* **PlotLambda**
+
+  * Queries latest N-second snapshots from DynamoDB
+  * Queries GSI for all-time max
+  * Plots line graph using matplotlib layer
+  * Writes PNG (`plots/plot.png`) to the S3 bucket
+* **API Gateway**
+
+  * `/dev/` endpoint proxies directly to PlotLambda
+
+Exports `PlotApiUrl` for use by DriverLambda.
+
+---
+
+## 4) **DriverLambdaStack**
+
+Demo / end-to-end test driver:
+
+* Creates objects of different sizes
+* Sleeps between operations to ensure CloudWatch periods advance
+* Lets SizeTracking + Logging → Metric → Alarm → Cleaner trigger naturally
+* Calls Plot API at the end and logs results
+
+---
+
+# 🗂 Project Structure
+
+```
+project-root/
+├── bin/
+│   └── app.ts                  # Instantiates 4 stacks
+├── lib/
+│   ├── storage-stack.ts
+│   ├── size-tracking-lambda-stack.ts
+│   ├── plot-lambda-stack.ts
+│   └── driver-lambda-stack.ts
+├── lambdas/
+│   ├── lambda_size_tracking.py
+│   ├── lambda_logging.py
+│   ├── lambda_cleaner.py
+│   ├── lambda_plotting.py
+│   └── lambda_driver.py
+├── layers/
+│   └── matplotlib-py313-x86-layer.zip
+├── package.json
+├── tsconfig.json
+└── cdk.json
+```
+
+---
+
+# 🚀 Deploy Instructions
+
+### Install dependencies
 
 ```bash
-# install deps / compile TS
 npm install
 npm run build
+```
 
-# bootstrap once per account/region (if not done yet)
-npx cdk bootstrap aws://YOUR_ACCOUNT_ID/us-east-1
+### Bootstrap account/region (one-time)
 
-# see stacks CDK will deploy
-npx cdk ls
-# StorageStack
-# SizeTrackingLambdaStack
-# PlotLambdaStack
-# DriverLambdaStack
+```bash
+npx cdk bootstrap aws://<ACCOUNT>/<REGION>
+```
 
-# sanity check the template changes
+### Synthesize / view changes
+
+```bash
 npx cdk synth
 npx cdk diff
+```
 
-# deploy everything
+### Deploy all stacks
+
+```bash
 npx cdk deploy --all
 ```
 
 ---
 
-## ✅ Verify
+# ✔️ Verifying the Pipeline
 
-1. **Confirm resources created**
+### 1. Run Driver Lambda
 
-   * DynamoDB table & GSI (StorageStack outputs show names)
-   * S3 bucket (SizeTrackingLambdaStack output `BucketName`)
-   * Plot API (PlotLambdaStack output `PlotApiUrl`)
-   * Lambdas present in their stacks
+Invoke `DriverLambda` manually from Console.
+It will:
 
-2. **Run the flow**
+* create several S3 objects
+* trigger fan-out event flow
+* generate size snapshots in DynamoDB
+* call the Plot API
 
-   * In Lambda Console → **invoke `DriverLambda`**
-   * Watch CloudWatch Logs for `SizeTrackingLambda` and `DriverLambda`
-   * Check DynamoDB table rows (new items appear with `bucket`, `ts`, `size_bytes`, `object_count`)
-   * Open `s3://<bucket>/plots/plot.png`
-   * Or hit `GET <PlotApiUrl>?window=10` to regenerate/return a presigned URL (depending on your code)
+### 2. Check DynamoDB table
+
+You will see rows like:
+
+| bucket | ts | object_count | size_bytes |
+| ------ | -- | ------------ | ---------- |
+| bucket | …  | 1            | 19         |
+| bucket | …  | 2            | 46         |
+| bucket | …  | 2            | 21         |
+| bucket | …  | 3            | 45504      |
+
+### 3. Check Logging Lambda log group
+
+See entries like:
+
+```json
+{"bucket":"...","object_name":"assignment1.txt","size_delta":19}
+{"object_name":"assignment2.txt","size_delta":28}
+{"object_name":"assignment1.txt","size_delta":-19}
+```
+
+### 4. CloudWatch Metric
+
+`Assignment4App / TotalObjectSize`
+Should show positive deltas and occasional negatives (Cleaner deletes).
+
+### 5. CloudWatch Alarm
+
+History will show:
+
+* `OK → ALARM` (threshold crossed)
+* Action: Lambda invoked
+* `ALARM → OK` after Cleaner deletes largest file
+
+### 6. Cleaner Lambda Logs
+
+You will see entries like:
+
+```
+[CLEANER] Alarm triggered with event: {...}
+[CLEANER] Largest object: s3://bucket/assignment2.txt (size=x)
+[CLEANER] Deleted object
+```
+
+### 7. Plot Output
+
+Check bucket for:
+
+```
+plots/plot.png
+```
+
+Or hit:
+
+```
+GET <PlotApiUrl>?window=20
+```
+
+to regenerate.
 
 ---
 
-## 🔐 Permissions (what you saw in `cdk diff`)
-
-* **S3 → SizeTrackingLambda:**
-  `lambda:InvokeFunction` allowed for `Service: s3.amazonaws.com` with conditions:
-
-  * `AWS:SourceArn` = bucket ARN
-  * `AWS:SourceAccount` = your account
-
-* **PlotLambda & DriverLambda → Bucket:**
-  get/list/put/delete object permissions on `bucketArn/*` (and some bucket-level ops on `bucketArn`)
-
-* **SizeTrackingLambda → DynamoDB:**
-  read/write data (PutItem for snapshots)
-
-* **PlotLambda → DynamoDB:**
-  read/query on table **and** `…/index/*` for the GSI
-
----
-
-## Sample plot output
-![Screenshot](images/plot-a3-sample-output.png)
-
-
-## 🧰 Notes & Tips
-
-* **Why this split avoids cycles:**
-  S3 bucket and its notifications live in **SizeTrackingLambdaStack**, so the bucket’s notification (which needs the Lambda ARN) doesn’t force `StorageStack` to depend on Lambda. Other stacks import the bucket/table via **exports** only in a single direction.
-
-* **Matplotlib layer (optional):**
-  If your plotting Lambda imports `matplotlib`/`numpy`/`Pillow`, include a layer ZIP under `layers/` with a top-level `python/` directory. Set `attachMatplotlibLayer: true` in `plot-lambda-stack.ts`. If not needed, set it to `false`.
-
-* **Dev convenience:**
-  Bucket has `autoDeleteObjects: true` and `RemovalPolicy.DESTROY` to make `cdk destroy` easy. Change to **retain** in prod.
-
----
-
-## 🧹 Cleanup
+# 🧹 Cleanup
 
 ```bash
-# remove all stacks & resources (thanks to DESTROY settings)
 npx cdk destroy --all
 ```
 
+Because buckets use `autoDeleteObjects: true` and all stacks use `RemovalPolicy.DESTROY`, teardown is clean.
+
 ---
 
-## 🐛 Troubleshooting
+# 🐛 Troubleshooting
 
-* **Only default stack deploys:**
-  Ensure `bin/app.ts` is instantiating **these** four stacks. Run `npx cdk ls` to confirm.
+### Alarm only fires once
 
-* **Cyclic dependency error:**
-  Confirm bucket + S3 notifications are in **SizeTrackingLambdaStack** (not `StorageStack`). Don’t add manual `addDependency` that creates a back edge.
+This is expected due to:
 
-* **Lookup role warning:**
-  `Lookup role ... was not assumed` — CDK will proceed with your default credentials. You can safely ignore or configure context lookups/roles if needed.
+* CloudWatch metric period boundaries
+* Positive/negative `size_delta` consolidation in the same window
+* Alarm only triggers on **OK → ALARM**, not ALARM → ALARM
 
+Explained fully in design notes.
+
+### Infinite rollback loops
+
+Delete orphan CloudWatch log groups:
+
+```
+/aws/lambda/SizeTrackingLambdaStack-LoggingLambda*
+/aws/lambda/SizeTrackingLambdaStack-CleanerLambda*
+```
+
+They must not pre-exist or CDK fails to create them.
+
+---

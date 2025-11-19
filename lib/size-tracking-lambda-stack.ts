@@ -150,7 +150,7 @@ export class SizeTrackingLambdaStack extends cdk.Stack {
 
     const totalSizeMetric = metricFilter.metric({
       statistic: 'Sum',
-      period: Duration.seconds(30), // adjust for easier testing if desired
+      period: Duration.seconds(10), // adjust for easier testing if desired
     });
 
     // 8) Cleaner Lambda (invoked by CloudWatch alarm)

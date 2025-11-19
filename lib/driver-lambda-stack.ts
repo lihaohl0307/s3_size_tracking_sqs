@@ -20,7 +20,7 @@ export class DriverLambdaStack extends cdk.Stack {
       environment: {
         REGION: this.region,
         BUCKET_NAME: props.bucket.bucketName,
-        SLEEP_SECONDS: '12', // avoid overwriting too quickly
+        SLEEP_SECONDS: '6', // avoid overwriting too quickly
         PLOT_WINDOW: '120',  // seconds
         PLOT_API_URL: props.plotApiUrl,
       },
