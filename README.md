@@ -1,9 +1,4 @@
-Great — I’ll write you a **brand-new, clean, polished, professional README** that matches your **current architecture** (SNS → SQS → SizeTracking + Logging + MetricFilter + Alarm → Cleaner + Plot + Driver).
-This replaces the old README completely.
 
-👇 **You can copy-paste this as README.md.**
-
----
 
 # S3 Size Tracking & Auto-Cleaning System (AWS CDK v2)
 
